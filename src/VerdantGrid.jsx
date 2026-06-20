@@ -103,6 +103,13 @@ const PROJECTS = [
   { id: "e_brown", sec: "earth", branch: "Land Reclamation", name: "Brownfield Cleanup", cost: 60, req: [], fx: { soil: 0.3, fresh: 0.2 } },
   { id: "e_oil", sec: "earth", branch: "Land Reclamation", name: "Oil-Spill Remediation", cost: 125, req: ["e_brown"], fx: { soil: 0.25, river: 0.2, ocean: 0.1 } },
   { id: "e_bio", sec: "earth", branch: "Land Reclamation", name: "Soil Bioremediation", cost: 195, req: ["e_oil"], fx: { soil: 0.5 } },
+  { id: "e_fusion", sec: "earth", branch: "Renewable Energy", name: "Fusion Power", cost: 270, req: ["e_h2"], fx: { carbon: -1.2 } },
+  { id: "e_grid", sec: "earth", branch: "Atmospheric Recovery", name: "Smart Grid", cost: 90, req: [], fx: { carbon: -0.4 } },
+  { id: "e_retro", sec: "earth", branch: "Atmospheric Recovery", name: "Building Retrofits", cost: 105, req: ["e_grid"], fx: { carbon: -0.5 } },
+  { id: "e_methane", sec: "earth", branch: "Atmospheric Recovery", name: "Methane Capture", cost: 120, req: [], fx: { carbon: -0.6 } },
+  { id: "e_reflect", sec: "earth", branch: "Atmospheric Recovery", name: "Reflective City Surfaces", cost: 110, req: [], fx: { carbon: -0.3 } },
+  { id: "e_cloud", sec: "earth", branch: "Atmospheric Recovery", name: "Marine Cloud Brightening", cost: 175, req: ["e_reflect"], fx: { carbon: -0.5 } },
+  { id: "e_ozone", sec: "earth", branch: "Atmospheric Recovery", name: "Ozone Layer Restoration", cost: 150, req: [], fx: { carbon: -0.4 } },
 
   { id: "w_skim", sec: "water", branch: "Floating Stations", name: "River Skimmers", cost: 45, req: [], fx: { river: 0.4 } },
   { id: "w_lagoon", sec: "water", branch: "Floating Stations", name: "Lagoon Filtration", cost: 100, req: ["w_skim"], fx: { river: 0.3, fresh: 0.3 } },
@@ -124,6 +131,8 @@ const PROJECTS = [
   { id: "w_inter", sec: "water", branch: "Plastic Reduction", name: "River Interceptors", cost: 160, req: ["w_pack"], fx: { river: 0.3, ocean: 0.2 } },
   { id: "w_wet", sec: "water", branch: "Wetlands", name: "Wetland Restoration", cost: 80, req: [], fx: { river: 0.2, fresh: 0.2, animals: 0.15 } },
   { id: "w_peat", sec: "water", branch: "Wetlands", name: "Peatland Rewetting", cost: 150, req: ["w_wet"], fx: { carbon: -0.4, fresh: 0.2 } },
+  { id: "w_kelp", sec: "water", branch: "Blue Carbon", name: "Kelp Carbon Farms", cost: 110, req: [], fx: { carbon: -0.5, ocean: 0.15 } },
+  { id: "w_seagrass", sec: "water", branch: "Blue Carbon", name: "Seagrass Meadows", cost: 150, req: ["w_kelp"], fx: { carbon: -0.4, fish: 0.2 } },
   { id: "w_polar", sec: "water", branch: "Polar Research", name: "Polar Survey Stations", cost: 70, req: [], fx: { fish: 0.3 } },
   { id: "w_track", sec: "water", branch: "Polar Research", name: "Fish-Migration Tracking", cost: 135, req: ["w_polar"], fx: { fish: 0.4 } },
   { id: "w_trawl", sec: "water", branch: "Polar Research", name: "Ban Bottom Trawling", cost: 205, req: ["w_track"], fx: { fish: 0.6 } },
@@ -320,48 +329,65 @@ function Boat({ path, dur, emoji, size = 12 }) { return (<text fontSize={size} s
 function WorldMap({ world, globals, selected, onSelect }) {
   const water = (globals.ocean + globals.river) / 2;
   const pollution = clamp((72 - water) / 72, 0, 1);
-  const garbageOpacity = clamp((100 - globals.ocean) / 100, 0, 1) * 0.5;
+  const garbageOpacity = clamp((100 - globals.ocean) / 100, 0, 1) * 0.4;
   const garbage = [[260,150,26],[470,210,22],[700,170,24],[640,360,28],[150,360,24],[820,250,22]];
   const cargo = ["M 210 150 C 330 120, 440 150, 520 145", "M 360 180 C 390 250, 360 320, 400 370", "M 880 180 C 920 250, 870 320, 905 380", "M 600 360 C 660 390, 720 360, 770 385"];
   const trawl = ["M 820 360 C 860 340, 905 360, 930 390", "M 120 200 C 170 180, 230 200, 270 175", "M 760 300 C 800 290, 840 305, 870 290"];
   const trawlBanned = !!world.purchased.w_trawl;
-  const bands = [[0,92,"#eaf2f8",0.5],[92,150,"#2f5d39",0.28],[150,205,"#cbb478",0.38],[205,285,"#2f7d3a",0.34],[285,345,"#cbb478",0.32],[345,432,"#3f7a45",0.22]];
+  const bands = [[0,92,"#e7f1ef",0.45],[92,150,"#2c5b3a",0.32],[150,205,"#c7b074",0.4],[205,285,"#2f8f43",0.36],[285,345,"#c7b074",0.34],[345,432,"#3c8048",0.24]];
+  const EXTR = 7; // faux-3D extrusion depth
+  const extrude = (d, key) => Array.from({ length: EXTR }).map((_, k) => {
+    const off = EXTR - k; return <path key={key + "x" + k} d={d} transform={`translate(0 ${off})`} fill={lerpColor("#231a0d", "#83663a", k / (EXTR - 1))} style={{ pointerEvents: "none" }} />;
+  });
+  const topFace = (d, fill, extra) => (<g>{extra}<path d={d} fill={fill} style={{ pointerEvents: "none" }} /></g>);
 
   return (
-    <svg viewBox="0 0 1000 500" style={{ width: "100%", height: "auto", display: "block", borderRadius: 16, border: "1px solid rgba(255,255,255,0.12)", background: "#05203a", boxShadow: "0 10px 40px rgba(0,0,0,0.45)" }}>
+    <svg viewBox="0 0 1000 500" style={{ width: "100%", height: "auto", display: "block", borderRadius: 18, border: "1px solid rgba(94,240,138,0.18)", background: "#0a1f1a", boxShadow: "0 18px 60px rgba(0,0,0,0.55), inset 0 0 80px rgba(0,0,0,0.4)" }}>
       <defs>
-        <linearGradient id="vgOcean" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#0a3358" /><stop offset="0.5" stopColor="#125f8a" /><stop offset="1" stopColor="#08263f" /></linearGradient>
-        <radialGradient id="vgGlobe" cx="40%" cy="32%" r="80%"><stop offset="0%" stopColor="rgba(255,255,255,0.16)" /><stop offset="45%" stopColor="rgba(255,255,255,0)" /><stop offset="100%" stopColor="rgba(0,8,18,0.55)" /></radialGradient>
-        <radialGradient id="vgAtmo" cx="50%" cy="46%" r="78%"><stop offset="64%" stopColor="rgba(120,180,230,0)" /><stop offset="100%" stopColor="rgba(90,150,210,0.16)" /></radialGradient>
-        <filter id="vgRelief" x="-4%" y="-4%" width="108%" height="108%"><feTurbulence type="fractalNoise" baseFrequency="0.014 0.022" numOctaves="4" seed="11" result="n" /><feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G" /></filter>
-        <filter id="vgShadow"><feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#000" floodOpacity="0.5" /></filter>
+        <radialGradient id="vgOcean" cx="26%" cy="20%" r="95%"><stop offset="0%" stopColor="#27554a" /><stop offset="45%" stopColor="#163a33" /><stop offset="100%" stopColor="#091915" /></radialGradient>
+        <radialGradient id="vgSun" cx="22%" cy="16%" r="55%"><stop offset="0%" stopColor="rgba(180,255,200,0.5)" /><stop offset="100%" stopColor="rgba(180,255,200,0)" /></radialGradient>
+        <radialGradient id="vgGlobe" cx="38%" cy="30%" r="85%"><stop offset="0%" stopColor="rgba(255,255,255,0.1)" /><stop offset="48%" stopColor="rgba(255,255,255,0)" /><stop offset="100%" stopColor="rgba(0,8,6,0.6)" /></radialGradient>
+        <radialGradient id="vgAtmo" cx="50%" cy="46%" r="80%"><stop offset="66%" stopColor="rgba(94,240,138,0)" /><stop offset="100%" stopColor="rgba(40,120,90,0.2)" /></radialGradient>
+        <filter id="vgTerrain"><feTurbulence type="fractalNoise" baseFrequency="0.02 0.03" numOctaves="5" seed="8" result="n" /><feDiffuseLighting in="n" lightingColor="#e6f5e2" surfaceScale="2.4" diffuseConstant="1.15"><feDistantLight azimuth="235" elevation="58" /></feDiffuseLighting></filter>
+        <filter id="vgShadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="7" stdDeviation="7" floodColor="#000" floodOpacity="0.55" /></filter>
         <filter id="vgBlur"><feGaussianBlur stdDeviation="5" /></filter>
-        <filter id="vgRipple"><feTurbulence type="turbulence" baseFrequency="0.016 0.04" numOctaves="2" seed="5" result="t" /><feColorMatrix in="t" type="matrix" values="0 0 0 0 0.4  0 0 0 0 0.6  0 0 0 0 0.8  0 0 0 0.045 0" /></filter>
+        <filter id="vgRipple"><feTurbulence type="turbulence" baseFrequency="0.012 0.03" numOctaves="2" seed="5" result="t" /><feColorMatrix in="t" type="matrix" values="0 0 0 0 0.35  0 0 0 0 0.7  0 0 0 0 0.55  0 0 0 0.035 0" /></filter>
         <clipPath id="vgLandClip">{REGION_GEO_IDS.map((id) => <path key={id} d={REGION_PATHS[id]} />)}{ISLAND_PATHS.map((d, i) => <path key={"i" + i} d={d} />)}</clipPath>
       </defs>
 
       <rect x="0" y="0" width="1000" height="500" fill="url(#vgOcean)" />
+      <rect x="0" y="0" width="1000" height="500" fill="url(#vgSun)" style={{ pointerEvents: "none" }} />
       <rect x="0" y="0" width="1000" height="500" filter="url(#vgRipple)" opacity="0.6" />
-      <rect x="0" y="0" width="1000" height="500" fill={lerpColor("#1c6fa8", "#3f7d57", pollution)} opacity={pollution * 0.5} style={{ transition: "fill .8s, opacity .8s" }} />
-      {[[200,210,38],[560,300,46],[760,180,40]].map(([x, y, w], i) => (<ellipse key={"gl" + i} cx={x} cy={y} rx={w} ry="3" fill="rgba(255,255,255,0.16)"><animateTransform attributeName="transform" type="translate" from="-40 0" to="60 0" dur={`${10 + i * 3}s`} repeatCount="indefinite" /></ellipse>))}
-      {garbage.map(([x, y, r], i) => (<g key={"gb" + i} opacity={garbageOpacity} style={{ transition: "opacity .8s" }}><ellipse cx={x} cy={y} rx={r} ry={r * 0.55} fill="#6e5a36" /><ellipse cx={x + r * 0.4} cy={y + 3} rx={r * 0.5} ry={r * 0.3} fill="#574826" /></g>))}
+      <rect x="0" y="0" width="1000" height="500" fill={lerpColor("#1d6e74", "#3f6b4a", pollution)} opacity={pollution * 0.45} style={{ transition: "fill .8s, opacity .8s" }} />
+      {[[200,210,38],[560,300,46],[760,180,40]].map(([x, y, w], i) => (<ellipse key={"gl" + i} cx={x} cy={y} rx={w} ry="3" fill="rgba(200,255,220,0.14)"><animateTransform attributeName="transform" type="translate" from="-40 0" to="60 0" dur={`${10 + i * 3}s`} repeatCount="indefinite" /></ellipse>))}
+      {garbage.map(([x, y, r], i) => (<g key={"gb" + i} opacity={garbageOpacity} style={{ transition: "opacity .8s" }}><ellipse cx={x} cy={y} rx={r} ry={r * 0.55} fill="#5e5430" /><ellipse cx={x + r * 0.4} cy={y + 3} rx={r * 0.5} ry={r * 0.3} fill="#4a4226" /></g>))}
       {cargo.map((p, i) => <Boat key={"c" + i} path={p} dur={26 + i * 6} emoji="🚢" />)}
       {!trawlBanned && trawl.map((p, i) => <Boat key={"tr" + i} path={p} dur={18 + i * 4} emoji="🚤" size={11} />)}
 
       {/* coastal shelf glow */}
-      <g filter="url(#vgBlur)" opacity="0.5">{REGION_GEO_IDS.map((id) => <path key={id} d={REGION_PATHS[id]} fill="none" stroke="#5fc7e8" strokeWidth="6" />)}{ISLAND_PATHS.map((d, i) => <path key={"i" + i} d={d} fill="none" stroke="#5fc7e8" strokeWidth="5" />)}</g>
+      <g filter="url(#vgBlur)" opacity="0.45">{REGION_GEO_IDS.map((id) => <path key={id} d={REGION_PATHS[id]} fill="none" stroke="#5ef0c0" strokeWidth="6" />)}{ISLAND_PATHS.map((d, i) => <path key={"i" + i} d={d} fill="none" stroke="#5ef0c0" strokeWidth="5" />)}</g>
 
       {/* polar ice */}
-      <ellipse cx="500" cy="-26" rx="600" ry="68" fill="rgba(230,242,250,0.9)" /><path d={ANTARCTICA} fill="rgba(232,243,251,0.95)" />
+      <ellipse cx="500" cy="-26" rx="600" ry="68" fill="rgba(224,240,236,0.88)" /><path d={ANTARCTICA} fill="rgba(226,241,237,0.92)" />
 
-      {/* land */}
-      <g filter="url(#vgRelief)"><g filter="url(#vgShadow)">
-        {ISLAND_PATHS.map((d, i) => <path key={"is" + i} d={d} fill={lerpColor("#7d6a4c", "#3a7a45", globals.forest / 100)} stroke="rgba(0,0,0,0.3)" strokeWidth="0.8" style={{ pointerEvents: "none" }} />)}
-        {REGION_GEO_IDS.map((id) => { const r = world.regions[id]; return <path key={id} d={REGION_PATHS[id]} fill={lerpColor("#8a7350", "#2f7a3f", r.forest / 100)} stroke={selected === id ? "#ffffff" : world.hq === id ? "#facc15" : r.ruleBreaking ? "#f87171" : "rgba(0,0,0,0.3)"} strokeWidth={selected === id ? 3 : world.hq === id ? 2.4 : 1} onClick={() => onSelect(id)} style={{ cursor: "pointer", transition: "fill .8s" }} />; })}
-      </g></g>
+      {/* LAND — extruded slabs floating on the ocean */}
+      <g filter="url(#vgShadow)">
+        {ISLAND_PATHS.map((d, i) => <g key={"is" + i}>{extrude(d, "is" + i)}{topFace(d, lerpColor("#7d6a4c", "#36833f", globals.forest / 100))}</g>)}
+        {REGION_GEO_IDS.map((id) => { const r = world.regions[id];
+          const stroke = selected === id ? "#ffffff" : world.hq === id ? "#facc15" : r.ruleBreaking ? "#f87171" : null;
+          return (<g key={id} onClick={() => onSelect(id)} style={{ cursor: "pointer" }}>
+            {extrude(REGION_PATHS[id], id)}
+            <path d={REGION_PATHS[id]} fill={lerpColor("#8a7350", "#2f8f43", r.forest / 100)} style={{ transition: "fill .8s" }} />
+            {stroke && <path d={REGION_PATHS[id]} fill="none" stroke={stroke} strokeWidth={selected === id ? 2.6 : 2} style={{ pointerEvents: "none" }} />}
+          </g>); })}
+      </g>
 
-      {/* biome bands (clipped to land) */}
-      <g clipPath="url(#vgLandClip)" style={{ pointerEvents: "none" }}>{bands.map(([y0, y1, c, o], i) => <rect key={i} x="0" y={y0} width="1000" height={y1 - y0} fill={c} opacity={o} />)}</g>
+      {/* biome bands + terrain relief lighting (clipped to land) */}
+      <g clipPath="url(#vgLandClip)" style={{ pointerEvents: "none" }}>
+        {bands.map(([y0, y1, c, o], i) => <rect key={i} x="0" y={y0} width="1000" height={y1 - y0} fill={c} opacity={o} />)}
+        <rect x="0" y="0" width="1000" height="500" filter="url(#vgTerrain)" opacity="0.5" style={{ mixBlendMode: "soft-light" }} />
+        <rect x="0" y="0" width="1000" height="500" fill="url(#vgSun)" opacity="0.5" style={{ mixBlendMode: "screen" }} />
+      </g>
 
       {/* structures, trees, labels */}
       {REGION_GEO_IDS.map((id) => {
@@ -551,62 +577,79 @@ export default function VerdantGrid() {
    Design system
 --------------------------------------------------------------------------- */
 const CSS = `
-.vg-app{min-height:100vh;padding:20px;box-sizing:border-box;background:radial-gradient(1200px 600px at 50% -10%,#11243a,#070d16 60%);color:#e6eef5;font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif}
-.vg-wrap{max-width:1200px;margin:0 auto}
-.vg-header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px}
-.vg-title{margin:0;font-size:22px;font-weight:800;letter-spacing:-.3px}.vg-title span{color:#34d399}
-.vg-sub{font-size:11.5px;color:#8aa0b4;margin-top:3px}
+.vg-app{min-height:100vh;padding:22px;box-sizing:border-box;color:#d8f0e4;font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ background:
+  radial-gradient(900px 520px at 16% -8%,rgba(94,240,138,.12),transparent 60%),
+  radial-gradient(820px 600px at 102% 2%,rgba(54,224,200,.09),transparent 55%),
+  linear-gradient(rgba(94,240,138,.028) 1px,transparent 1px) 0 0/44px 44px,
+  linear-gradient(90deg,rgba(94,240,138,.028) 1px,transparent 1px) 0 0/44px 44px,
+  linear-gradient(180deg,#07140f,#040a08)}
+.vg-app *{font-variant-numeric:tabular-nums}
+.vg-wrap{max-width:1220px;margin:0 auto}
+.vg-glass{background:linear-gradient(155deg,rgba(22,44,37,.62),rgba(9,19,16,.62));border:1px solid rgba(94,240,138,.14);border-radius:16px;backdrop-filter:blur(12px);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 14px 36px rgba(0,0,0,.42)}
+.vg-header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:18px}
+.vg-title{margin:0;font-size:23px;font-weight:800;letter-spacing:-.4px;background:linear-gradient(90deg,#eafff0,#9bf7c0);-webkit-background-clip:text;background-clip:text;color:transparent}
+.vg-title span{background:linear-gradient(90deg,#5ef08a,#36e0c8);-webkit-background-clip:text;background-clip:text;color:transparent}
+.vg-sub{font-size:11.5px;color:#7fa593;margin-top:3px;letter-spacing:.2px}
 .vg-controls{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
-.vg-points{font-size:15px;font-weight:800;color:#86efac;background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.25);padding:5px 11px;border-radius:9px}
-.vg-btn{cursor:pointer;background:#1c2940;color:#dbe5f0;border:1px solid rgba(255,255,255,.08);border-radius:9px;padding:8px 12px;font-size:12.5px;font-weight:700;transition:transform .12s,filter .12s,background .2s}
-.vg-btn:hover:not(:disabled){filter:brightness(1.12);transform:translateY(-1px)}
-.vg-btn:disabled{opacity:.55;cursor:default}
-.vg-btn.primary{background:#34d399;color:#08121e;border-color:transparent}
-.vg-btn.sel{background:#34d399;color:#08121e;border-color:transparent}
-.vg-btn.block{width:100%;margin-top:2px}
+.vg-points{font-size:15px;font-weight:800;color:#072018;background:linear-gradient(90deg,#5ef08a,#36e0c8);padding:6px 13px;border-radius:10px;box-shadow:0 0 18px rgba(94,240,138,.45)}
+.vg-btn{cursor:pointer;background:linear-gradient(155deg,rgba(34,60,50,.7),rgba(14,26,21,.7));color:#cdeeda;border:1px solid rgba(94,240,138,.18);border-radius:10px;padding:8px 13px;font-size:12.5px;font-weight:700;transition:transform .12s,box-shadow .18s,border-color .18s}
+.vg-btn:hover:not(:disabled){transform:translateY(-1px);border-color:rgba(94,240,138,.5);box-shadow:0 0 16px rgba(94,240,138,.25)}
+.vg-btn:disabled{opacity:.45;cursor:default}
+.vg-btn.primary{background:linear-gradient(90deg,#5ef08a,#36e0c8);color:#072018;border-color:transparent;box-shadow:0 0 18px rgba(94,240,138,.35)}
+.vg-btn.sel{background:linear-gradient(90deg,#5ef08a,#36e0c8);color:#072018;border-color:transparent}
+.vg-btn.block{width:100%;margin-top:auto}
 .vg-chip{font-size:10px;font-weight:700;padding:5px 9px;border-radius:20px}
-.vg-chip.warn{color:#fff;background:#7c2d12;border:1px solid #f97316;animation:vgPulse 1.1s infinite}
-.vg-balance{background:rgba(255,255,255,.035);border:1px solid;border-radius:16px;padding:14px 18px;margin-bottom:16px;backdrop-filter:blur(6px)}
-.vg-balance-h{display:flex;justify-content:space-between;margin-bottom:8px;font-size:11.5px;letter-spacing:1px;text-transform:uppercase;color:#8aa0b4}
+.vg-chip.warn{color:#fff;background:linear-gradient(90deg,#7c2d12,#b45309);border:1px solid #f97316;animation:vgPulse 1.1s infinite}
+.vg-balance{padding:15px 18px;margin-bottom:16px;border-radius:16px;background:linear-gradient(155deg,rgba(22,44,37,.62),rgba(9,19,16,.62));border:1px solid;backdrop-filter:blur(12px);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 14px 36px rgba(0,0,0,.42)}
+.vg-balance-h{display:flex;justify-content:space-between;margin-bottom:9px;font-size:11px;letter-spacing:1.4px;text-transform:uppercase;color:#7fa593}
 .vg-main{display:grid;gap:16px;margin-bottom:18px;grid-template-columns:minmax(0,1.65fr) minmax(0,1fr)}
-@media(max-width:860px){.vg-main{grid-template-columns:1fr}}
-.vg-caption{font-size:10.5px;color:#6b7f93;margin-top:8px;text-align:center}
-.vg-panel{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:16px}
-.vg-panel-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.vg-panel-h h2{margin:0;font-size:16px;font-weight:700}
-.vg-alert{background:rgba(220,38,38,.14);border:1px solid #dc2626;border-radius:10px;padding:9px 11px;font-size:11.5px;margin-bottom:12px;color:#fecaca;animation:vgPulse 1.4s infinite}
-.vg-region-grid{display:grid;gap:9px;grid-template-columns:1fr 1fr;margin-bottom:14px}
-.vg-rl{display:flex;justify-content:space-between;font-size:10.5px;color:#8aa0b4;margin-bottom:4px}
+@media(max-width:880px){.vg-main{grid-template-columns:1fr}}
+.vg-caption{font-size:10.5px;color:#5f7c6e;margin-top:9px;text-align:center;letter-spacing:.2px}
+.vg-panel{padding:16px;border-radius:16px;background:linear-gradient(155deg,rgba(22,44,37,.62),rgba(9,19,16,.62));border:1px solid rgba(94,240,138,.14);backdrop-filter:blur(12px);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 14px 36px rgba(0,0,0,.42)}
+.vg-panel-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:11px}.vg-panel-h h2{margin:0;font-size:16px;font-weight:700;color:#eafff0}
+.vg-alert{background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.6);border-radius:11px;padding:9px 11px;font-size:11.5px;margin-bottom:12px;color:#fecaca;animation:vgPulse 1.4s infinite}
+.vg-region-grid{display:grid;gap:10px;grid-template-columns:1fr 1fr;margin-bottom:14px}
+.vg-rl{display:flex;justify-content:space-between;font-size:10.5px;color:#7fa593;margin-bottom:4px}
 .vg-actions{display:flex;flex-wrap:wrap;gap:8px}
-.vg-hint{font-size:10px;color:#6b7f93;margin-top:9px;line-height:1.5}
-.vg-section-label{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#6b7f93;margin-bottom:9px;font-weight:600}
-.vg-metrics{display:grid;gap:10px;margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
-.vg-metric{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:13px;padding:11px 13px;min-width:0}
-.vg-metric-h{font-size:10.5px;letter-spacing:.3px;color:#94a3b8;font-weight:600}
-.vg-track2{background:rgba(255,255,255,.09);border-radius:6px;overflow:hidden}
-.vg-marquee{overflow:hidden;white-space:nowrap;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:11px;padding:9px 0;margin-bottom:12px}
+.vg-hint{font-size:10px;color:#5f7c6e;margin-top:10px;line-height:1.55}
+.vg-section-label{font-size:11px;letter-spacing:1.4px;text-transform:uppercase;color:#6b8a7b;margin-bottom:10px;font-weight:600;display:flex;align-items:center;gap:9px}
+.vg-section-label::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,rgba(94,240,138,.25),transparent)}
+.vg-metrics{display:grid;gap:11px;margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(122px,1fr))}
+.vg-metric{position:relative;padding:12px 13px 13px;min-width:0;border-radius:14px;background:linear-gradient(155deg,rgba(24,46,39,.6),rgba(10,20,17,.6));border:1px solid rgba(94,240,138,.12);overflow:hidden;transition:transform .14s,border-color .2s}
+.vg-metric::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,#5ef08a,#36e0c8);opacity:.7}
+.vg-metric:hover{transform:translateY(-2px);border-color:rgba(94,240,138,.35)}
+.vg-metric-h{font-size:10.5px;letter-spacing:.4px;color:#8fb0a0;font-weight:600;margin-bottom:2px}
+.vg-track2{background:rgba(0,0,0,.32);border-radius:6px;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04)}
+.vg-marquee{overflow:hidden;white-space:nowrap;border-radius:12px;padding:9px 0;margin-bottom:12px;background:linear-gradient(155deg,rgba(22,44,37,.55),rgba(9,19,16,.55));border:1px solid rgba(94,240,138,.12)}
 .vg-marquee:hover .vg-track{animation-play-state:paused}
 .vg-track{display:inline-block;animation:vgMarquee 40s linear infinite}
 .vg-tick{margin-right:36px;font-size:12.5px}
-.vg-log{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:14px;max-height:168px;overflow-y:auto}
-.vg-log-row{display:flex;gap:10px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px}
-.vg-log-t{color:#52647a;min-width:40px}
-.vg-foot{text-align:center;font-size:11px;color:#52647a;margin-top:14px}
-.vg-modal-bg{position:fixed;inset:0;background:rgba(3,7,12,.78);z-index:40;display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(3px)}
-.vg-modal{background:#0d1726;border:1px solid rgba(255,255,255,.12);border-radius:18px;width:min(1020px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 30px 80px rgba(0,0,0,.5)}
-.vg-modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid rgba(255,255,255,.08)}
-.vg-tabs{display:flex;gap:8px;padding:14px 20px 0}
-.vg-tab{cursor:pointer;flex:1;background:rgba(255,255,255,.05);color:#cbd5e1;border:none;border-radius:10px;padding:10px 6px;font-size:13px;font-weight:700;transition:filter .12s}
-.vg-tab:hover{filter:brightness(1.15)}
-.vg-modal-body{overflow-y:auto;padding:18px 20px}
-.vg-branch{display:flex;align-items:center;gap:8px;font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:#aeb9c8;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid}
-.vg-grid{display:grid;gap:11px;grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
-.vg-node{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:12px;display:flex;flex-direction:column;transition:transform .12s,border-color .2s}
-.vg-node:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.22)}
-.vg-node.owned{border-color:rgba(52,211,153,.5);background:rgba(52,211,153,.06)}
-.vg-node.locked{opacity:.55}
+.vg-log{border-radius:14px;max-height:168px;overflow-y:auto;background:linear-gradient(155deg,rgba(20,40,34,.5),rgba(8,16,14,.5));border:1px solid rgba(94,240,138,.1)}
+.vg-log-row{display:flex;gap:10px;padding:6px 14px;border-bottom:1px solid rgba(94,240,138,.06);font-size:12px}
+.vg-log-t{color:#4d6a5d;min-width:40px}
+.vg-foot{text-align:center;font-size:11px;color:#4d6a5d;margin-top:14px;letter-spacing:.3px}
+.vg-modal-bg{position:fixed;inset:0;background:rgba(2,8,6,.74);z-index:40;display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(5px)}
+.vg-modal{background:linear-gradient(160deg,#0d1f1a,#081411);border:1px solid rgba(94,240,138,.2);border-radius:20px;width:min(1040px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 40px 90px rgba(0,0,0,.6),0 0 50px rgba(94,240,138,.07)}
+.vg-modal-head{display:flex;align-items:center;justify-content:space-between;padding:17px 22px;border-bottom:1px solid rgba(94,240,138,.12)}
+.vg-modal-head h2{color:#eafff0}
+.vg-tabs{display:flex;gap:9px;padding:16px 22px 0}
+.vg-tab{cursor:pointer;flex:1;background:rgba(94,240,138,.06);color:#bcd9c9;border:1px solid rgba(94,240,138,.12);border-radius:11px;padding:10px 6px;font-size:13px;font-weight:700;transition:transform .12s,box-shadow .18s}
+.vg-tab:hover{transform:translateY(-1px);box-shadow:0 0 14px rgba(94,240,138,.18)}
+.vg-tab.on{box-shadow:0 0 20px rgba(94,240,138,.3)}
+.vg-modal-body{overflow-y:auto;padding:18px 22px}
+.vg-branch{display:flex;align-items:center;gap:9px;font-size:11.5px;letter-spacing:.8px;text-transform:uppercase;color:#a7c4b4;margin-bottom:11px;padding-bottom:7px;border-bottom:1px solid}
+.vg-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(212px,1fr))}
+.vg-node{background:linear-gradient(160deg,rgba(26,50,42,.55),rgba(10,20,17,.55));border:1px solid rgba(94,240,138,.13);border-radius:13px;padding:13px;display:flex;flex-direction:column;min-height:118px;transition:transform .14s,border-color .2s,box-shadow .2s}
+.vg-node:hover{transform:translateY(-3px);border-color:rgba(94,240,138,.45);box-shadow:0 10px 24px rgba(0,0,0,.4),0 0 18px rgba(94,240,138,.12)}
+.vg-node.owned{border-color:rgba(94,240,138,.55);background:linear-gradient(160deg,rgba(52,211,153,.12),rgba(10,24,18,.5))}
+.vg-node.locked{opacity:.5}
 .vg-cost{font-size:12px;color:#86efac;font-weight:800;white-space:nowrap}
-.vg-end{background:#0d1726;border:2px solid;border-radius:20px;padding:32px 36px;max-width:470px;text-align:center;box-shadow:0 30px 80px rgba(0,0,0,.6)}
-.vg-k{font-size:10px;color:#8aa0b4;text-transform:uppercase;letter-spacing:.5px}
+.vg-end{background:linear-gradient(160deg,#0d1f1a,#081411);border:2px solid;border-radius:22px;padding:34px 38px;max-width:480px;text-align:center;box-shadow:0 40px 90px rgba(0,0,0,.65),0 0 60px rgba(94,240,138,.08)}
+.vg-k{font-size:10px;color:#8fb0a0;text-transform:uppercase;letter-spacing:.6px}
+.vg-app ::-webkit-scrollbar{width:9px;height:9px}
+.vg-app ::-webkit-scrollbar-thumb{background:rgba(94,240,138,.22);border-radius:8px}
+.vg-app ::-webkit-scrollbar-thumb:hover{background:rgba(94,240,138,.38)}
 @keyframes vgMarquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 @keyframes vgPulse{0%,100%{opacity:1}50%{opacity:.5}}
 `;
