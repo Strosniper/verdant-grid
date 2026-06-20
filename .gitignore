@@ -1,0 +1,15 @@
+# dependencies
+node_modules
+
+# build output
+dist
+dist-ssr
+
+# local env / editor
+*.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+
+# vercel
+.vercel
