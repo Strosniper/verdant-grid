@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { REGION_GEO_IDS, REGION_PATHS, CENTROIDS, SLOTS, DIST, NEUTRAL_PATH, ANTARCTICA_PATH, projLatY } from "./worldGeo.js";
 
 /* ============================================================================
    VERDANT GRID: RESTORATION  —  v4  "Living Earth"
@@ -30,40 +31,8 @@ const REGION_DEFS = [
 ];
 const REGION_INDEX = Object.fromEntries(REGION_DEFS.map((r) => [r.id, r]));
 
-/* ---------------------------------------------------------------------------
-   Geography — real-ish lat/lon coastlines on an equirectangular map
---------------------------------------------------------------------------- */
-const MW = 1000, MH = 500;
-const project = (lon, lat) => [(lon + 180) / 360 * MW, (90 - lat) / 180 * MH];
-const toPath = (pts) => "M" + pts.map((p) => `${round(p[0], 1)} ${round(p[1], 1)}`).join(" L ") + " Z";
-const OUTLINES = {
-  na: [[-166,66],[-156,71],[-130,71],[-100,70],[-82,73],[-78,62],[-64,60],[-55,52],[-60,47],[-70,42],[-76,35],[-81,30],[-80,25],[-90,29],[-95,25],[-97,18],[-90,16],[-83,9],[-80,8],[-87,14],[-96,16],[-106,23],[-114,28],[-122,37],[-124,48],[-135,57],[-150,60]],
-  sa: [[-77,8],[-72,11],[-60,10],[-50,5],[-44,-2],[-35,-5],[-39,-13],[-43,-23],[-48,-28],[-54,-34],[-58,-39],[-63,-41],[-65,-45],[-69,-52],[-66,-55],[-72,-52],[-73,-44],[-73,-37],[-71,-30],[-71,-18],[-77,-12],[-81,-5],[-80,2],[-78,5]],
-  eu: [[-9,43],[-9,39],[-6,36],[-1,37],[3,42],[7,44],[12,45],[14,41],[18,42],[24,40],[28,41],[34,46],[40,48],[40,55],[30,60],[24,57],[22,60],[24,66],[20,70],[12,66],[5,62],[8,58],[8,54],[3,52],[-1,49],[-4,48]],
-  af: [[-13,28],[-6,36],[10,37],[20,32],[26,32],[32,31],[37,22],[43,12],[51,12],[48,4],[41,-2],[40,-10],[35,-18],[33,-26],[27,-34],[18,-35],[14,-26],[12,-16],[9,-2],[5,4],[-2,5],[-9,5],[-15,12],[-17,21]],
-  ru: [[42,60],[40,68],[55,70],[68,73],[80,73],[100,76],[115,74],[135,73],[160,70],[180,68],[178,66],[165,62],[160,56],[155,52],[140,48],[132,43],[130,50],[120,53],[108,52],[95,50],[80,51],[68,53],[58,52],[50,50],[48,55],[44,57]],
-  as: [[42,40],[36,36],[35,30],[40,25],[43,15],[48,13],[52,16],[57,23],[62,25],[67,25],[72,21],[73,16],[77,8],[80,13],[84,18],[89,21],[92,17],[97,16],[99,9],[101,3],[104,9],[107,11],[109,18],[112,21],[117,23],[121,29],[122,33],[121,37],[126,40],[131,43],[120,45],[105,44],[90,45],[75,43],[60,42],[50,41],[45,40]],
-  oc: [[131,-12],[136,-12],[141,-11],[143,-14],[146,-18],[149,-21],[153,-26],[153,-30],[151,-34],[148,-38],[143,-39],[139,-36],[135,-35],[129,-32],[124,-34],[118,-35],[114,-34],[114,-26],[117,-21],[122,-18],[127,-14]],
-};
-const REGION_PROJ = Object.fromEntries(Object.entries(OUTLINES).map(([id, o]) => [id, o.map(([lo, la]) => project(lo, la))]));
-const REGION_PATHS = Object.fromEntries(Object.entries(REGION_PROJ).map(([id, p]) => [id, toPath(p)]));
-const CENTROIDS = Object.fromEntries(Object.entries(REGION_PROJ).map(([id, p]) => [id, [mean(p.map((q) => q[0])), mean(p.map((q) => q[1]))]]));
-const REGION_GEO_IDS = Object.keys(OUTLINES);
-
-const ISLAND_OUTLINES = [
-  [[-45,60],[-50,64],[-50,70],[-40,73],[-25,70],[-20,66],[-32,60]], [[-5,50],[-3,53],[-5,57],[-2,58],[0,53],[1,51]],
-  [[130,31],[135,34],[140,38],[142,43],[140,40],[137,36],[132,31]], [[44,-16],[50,-15],[50,-22],[46,-25],[44,-20]],
-  [[167,-46],[170,-44],[174,-41],[178,-38],[176,-41],[172,-45]], [[131,-2],[140,-3],[150,-6],[146,-8],[138,-8],[131,-5]],
-  [[-24,65],[-19,66],[-14,65],[-18,64]], [[95,5],[100,0],[106,-6],[114,-8],[120,-9],[112,-7],[104,-3],[98,2]],
-];
-const ISLAND_PATHS = ISLAND_OUTLINES.map((o) => toPath(o.map(([lo, la]) => project(lo, la))));
-const ANTARCTICA = "M0 500 L0 436 Q 130 424 270 436 T 560 432 T 830 438 L1000 432 L1000 500 Z";
-
-function pip(x, y, poly) { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]; if (((yi > y) !== (yj > y)) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c; } return c; }
-function genSlots(poly, gx = 6, gy = 6) { const xs = poly.map((p) => p[0]), ys = poly.map((p) => p[1]); const minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys); const inside = []; for (let j = 1; j < gy; j++) for (let i = 1; i < gx; i++) { const x = minx + ((maxx - minx) * i) / gx, y = miny + ((maxy - miny) * j) / gy; if (pip(x, y, poly)) inside.push([round(x, 1), round(y, 1)]); } return inside; }
-const SLOTS = Object.fromEntries(Object.entries(REGION_PROJ).map(([id, p]) => [id, genSlots(p)]));
+/* Geography (accurate coastlines + projection) lives in worldGeo.js */
 const slotAt = (id, i) => SLOTS[id][i % SLOTS[id].length] || CENTROIDS[id];
-const DIST = (() => { const ids = Object.keys(CENTROIDS); const d = {}; let max = 0; for (const a of ids) { d[a] = {}; for (const b of ids) { const v = Math.hypot(CENTROIDS[a][0] - CENTROIDS[b][0], CENTROIDS[a][1] - CENTROIDS[b][1]); d[a][b] = v; if (v > max) max = v; } } for (const a in d) for (const b in d[a]) d[a][b] /= max; return d; })();
 
 /* ---------------------------------------------------------------------------
    Skill tree (~93 projects)
@@ -334,7 +303,7 @@ function WorldMap({ world, globals, selected, onSelect }) {
   const cargo = ["M 210 150 C 330 120, 440 150, 520 145", "M 360 180 C 390 250, 360 320, 400 370", "M 880 180 C 920 250, 870 320, 905 380", "M 600 360 C 660 390, 720 360, 770 385"];
   const trawl = ["M 820 360 C 860 340, 905 360, 930 390", "M 120 200 C 170 180, 230 200, 270 175", "M 760 300 C 800 290, 840 305, 870 290"];
   const trawlBanned = !!world.purchased.w_trawl;
-  const bands = [[0,92,"#e7f1ef",0.45],[92,150,"#2c5b3a",0.32],[150,205,"#c7b074",0.4],[205,285,"#2f8f43",0.36],[285,345,"#c7b074",0.34],[345,432,"#3c8048",0.24]];
+  const bandDefs = [[90,66,"#e7f1ef",0.4],[66,48,"#2c5b3a",0.34],[48,30,"#3c8048",0.26],[30,14,"#c7b074",0.4],[14,-12,"#2f8f43",0.36],[-12,-30,"#c7b074",0.36],[-30,-52,"#3c8048",0.26]];
   const EXTR = 7; // faux-3D extrusion depth
   const extrude = (d, key) => Array.from({ length: EXTR }).map((_, k) => {
     const off = EXTR - k; return <path key={key + "x" + k} d={d} transform={`translate(0 ${off})`} fill={lerpColor("#231a0d", "#83663a", k / (EXTR - 1))} style={{ pointerEvents: "none" }} />;
@@ -352,7 +321,7 @@ function WorldMap({ world, globals, selected, onSelect }) {
         <filter id="vgShadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="7" stdDeviation="7" floodColor="#000" floodOpacity="0.55" /></filter>
         <filter id="vgBlur"><feGaussianBlur stdDeviation="5" /></filter>
         <filter id="vgRipple"><feTurbulence type="turbulence" baseFrequency="0.012 0.03" numOctaves="2" seed="5" result="t" /><feColorMatrix in="t" type="matrix" values="0 0 0 0 0.35  0 0 0 0 0.7  0 0 0 0 0.55  0 0 0 0.035 0" /></filter>
-        <clipPath id="vgLandClip">{REGION_GEO_IDS.map((id) => <path key={id} d={REGION_PATHS[id]} />)}{ISLAND_PATHS.map((d, i) => <path key={"i" + i} d={d} />)}</clipPath>
+        <clipPath id="vgLandClip">{REGION_GEO_IDS.map((id) => <path key={id} d={REGION_PATHS[id]} />)}<path d={NEUTRAL_PATH} /><path d={ANTARCTICA_PATH} /></clipPath>
       </defs>
 
       <rect x="0" y="0" width="1000" height="500" fill="url(#vgOcean)" />
@@ -365,14 +334,12 @@ function WorldMap({ world, globals, selected, onSelect }) {
       {!trawlBanned && trawl.map((p, i) => <Boat key={"tr" + i} path={p} dur={18 + i * 4} emoji="🚤" size={11} />)}
 
       {/* coastal shelf glow */}
-      <g filter="url(#vgBlur)" opacity="0.45">{REGION_GEO_IDS.map((id) => <path key={id} d={REGION_PATHS[id]} fill="none" stroke="#5ef0c0" strokeWidth="6" />)}{ISLAND_PATHS.map((d, i) => <path key={"i" + i} d={d} fill="none" stroke="#5ef0c0" strokeWidth="5" />)}</g>
-
-      {/* polar ice */}
-      <ellipse cx="500" cy="-26" rx="600" ry="68" fill="rgba(224,240,236,0.88)" /><path d={ANTARCTICA} fill="rgba(226,241,237,0.92)" />
+      <g filter="url(#vgBlur)" opacity="0.45">{REGION_GEO_IDS.map((id) => <path key={id} d={REGION_PATHS[id]} fill="none" stroke="#5ef0c0" strokeWidth="6" />)}<path d={NEUTRAL_PATH} fill="none" stroke="#5ef0c0" strokeWidth="5" /></g>
 
       {/* LAND — extruded slabs floating on the ocean */}
       <g filter="url(#vgShadow)">
-        {ISLAND_PATHS.map((d, i) => <g key={"is" + i}>{extrude(d, "is" + i)}{topFace(d, lerpColor("#7d6a4c", "#36833f", globals.forest / 100))}</g>)}
+        <g>{extrude(NEUTRAL_PATH, "neu")}{topFace(NEUTRAL_PATH, lerpColor("#7d6a4c", "#36833f", globals.forest / 100))}</g>
+        <g>{extrude(ANTARCTICA_PATH, "ant")}<path d={ANTARCTICA_PATH} fill="rgba(228,242,238,0.95)" style={{ pointerEvents: "none" }} /></g>
         {REGION_GEO_IDS.map((id) => { const r = world.regions[id];
           const stroke = selected === id ? "#ffffff" : world.hq === id ? "#facc15" : r.ruleBreaking ? "#f87171" : null;
           return (<g key={id} onClick={() => onSelect(id)} style={{ cursor: "pointer" }}>
@@ -384,7 +351,7 @@ function WorldMap({ world, globals, selected, onSelect }) {
 
       {/* biome bands + terrain relief lighting (clipped to land) */}
       <g clipPath="url(#vgLandClip)" style={{ pointerEvents: "none" }}>
-        {bands.map(([y0, y1, c, o], i) => <rect key={i} x="0" y={y0} width="1000" height={y1 - y0} fill={c} opacity={o} />)}
+        {bandDefs.map(([la, lb, c, o], i) => { const ya = projLatY(la), yb = projLatY(lb); return <rect key={i} x="0" y={Math.min(ya, yb)} width="1000" height={Math.abs(yb - ya)} fill={c} opacity={o} />; })}
         <rect x="0" y="0" width="1000" height="500" filter="url(#vgTerrain)" opacity="0.5" style={{ mixBlendMode: "soft-light" }} />
         <rect x="0" y="0" width="1000" height="500" fill="url(#vgSun)" opacity="0.5" style={{ mixBlendMode: "screen" }} />
       </g>
