@@ -11,11 +11,19 @@ const clamp = (v, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
 const round = (v, d = 1) => { const f = 10 ** d; return Math.round(v * f) / f; };
 const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 
-const SAVE_KEY = "verdant-grid-save-v4";
-const BEST_KEY = "verdant-grid-best-v4";
-const BASE_POINT_RATE = 1.2;          // slow economy
+const SAVE_KEY = "verdant-grid-save-v5";
+const BEST_KEY = "verdant-grid-best-v5";
+const BASE_POINT_RATE = 1.0;
+const UPKEEP_PER = 0.05;              // points/cycle drained per implemented project
 const LOYALTY_CAMPAIGN_COST = 30;
-const DISASTER_CHANCE = 0.005;        // rare, ~1 per 200 cycles
+const DISASTER_CHANCE = 0.005;
+const DIFFICULTY = {
+  easy:       { label: "Easy",       point: 1.0,  decay: 0.8, disaster: 0.5, rollout: 1.0 },
+  medium:     { label: "Medium",     point: 0.75, decay: 1.0, disaster: 1.0, rollout: 0.8 },
+  hard:       { label: "Hard",       point: 0.55, decay: 1.3, disaster: 1.5, rollout: 0.6 },
+  impossible: { label: "Impossible", point: 0.4,  decay: 1.7, disaster: 2.2, rollout: 0.45 },
+};
+const DIFF_KEYS = ["easy", "medium", "hard", "impossible"];
 
 /* ---------------------------------------------------------------------------
    Region archetypes
@@ -167,13 +175,13 @@ function computeBalance(regions, co2, temp) {
   const air = clamp(((460 - co2) / 65) * 100), climate = clamp(((2.5 - temp) / 1.7) * 100);
   return round(mean([avg("forest"), avg("soil"), avg("river"), avg("ocean"), avg("fish"), avg("animals"), avg("loyalty"), air, climate]));
 }
-function makeInitialWorld() {
+function makeInitialWorld(difficulty = "medium") {
   const regions = {};
   for (const d of REGION_DEFS) regions[d.id] = { id: d.id, loyalty: d.loyalty, carbon: d.carbon, forest: d.forest, soil: d.soil, river: d.river, ocean: d.ocean, fish: d.fish, animals: d.animals, freshwater: d.freshwater, ruleBreaking: d.loyalty < 40, volunteer: false };
   const co2 = 416, temp = round(1.0 + (co2 - 415) * 0.07, 2);
-  return { tick: 0, co2, temp, permafrost: false, permafrostCo2: 0, ecoPoints: 55, purchased: {}, rollout: {}, hq: "na", activeDisaster: null,
+  return { tick: 0, co2, temp, permafrost: false, permafrostCo2: 0, ecoPoints: 55, owned: {}, queue: [], completed: {}, rollout: {}, hq: "na", difficulty, activeDisaster: null,
     balance: computeBalance(regions, co2, temp), bestBalance: 0, status: "playing", flags: {}, regions,
-    events: [{ id: "seed", t: 0, kind: "info", msg: "🌍 Verdant Grid online — projects now roll out gradually, faster on loyal continents near your HQ." }] };
+    events: [{ id: "seed", t: 0, kind: "info", msg: `🌍 Verdant Grid online (${DIFFICULTY[difficulty].label}) — projects implement one at a time, in the order you commission them.` }] };
 }
 
 /* ---------------------------------------------------------------------------
@@ -185,13 +193,17 @@ function stepWorld(prev) {
   const addEvent = (msg, kind) => events.push({ id: `${prev.tick + 1}-${seq++}`, t: prev.tick + 1, msg, kind });
   const flags = { ...prev.flags };
   let { co2, temp, permafrost, permafrostCo2, hq } = prev;
+  const D = DIFFICULTY[prev.difficulty] || DIFFICULTY.medium;
   const ids = Object.keys(prev.regions);
-  const purchasedIds = Object.keys(prev.purchased).filter((id) => prev.purchased[id]);
+  const completed = prev.completed || {};
+  const completedIds = Object.keys(completed).filter((id) => completed[id]);
+  const queue = prev.queue || [];
+  const activePid = queue.length ? queue[0] : null;     // only the front of the queue rolls out
 
   let activeDisaster = prev.activeDisaster ? { ...prev.activeDisaster, ticks: prev.activeDisaster.ticks - 1 } : null;
   if (activeDisaster && activeDisaster.ticks <= 0) activeDisaster = null;
   let strike = null;
-  if (prev.tick > 20 && Math.random() < DISASTER_CHANCE) {
+  if (prev.tick > 20 && Math.random() < DISASTER_CHANCE * D.disaster) {
     const d = DISASTERS[Math.floor(Math.random() * DISASTERS.length)];
     const region = ids[Math.floor(Math.random() * ids.length)];
     strike = { ...d, region };
@@ -199,29 +211,28 @@ function stepWorld(prev) {
     addEvent(`${d.icon} DISASTER — a ${d.name} struck ${REGION_INDEX[region].name}!`, "crisis");
   }
 
-  const regions = {}, newRollout = {}; let illegalCo2 = 0; const accCarbon = [], accForest = [];
+  const regions = {}, newRollout = {}; let illegalCo2 = 0; const accCarbon = [], accForest = [], activeProg = [];
   for (const id of ids) {
     const r = prev.regions[id]; const def = REGION_INDEX[id];
     let { forest, soil, river, ocean, fish, animals, freshwater, carbon, loyalty } = r;
     const distFactor = DIST[hq][id];
-    const rate = 0.012 + (loyalty / 100) * 0.03 + (1 - distFactor) * 0.018;     // rollout speed
-    const rg = { ...(prev.rollout[id] || {}) };
+    const rate = (0.012 + (loyalty / 100) * 0.03 + (1 - distFactor) * 0.018) * D.rollout;   // rollout speed
+    // advance only the active (front-of-queue) project for this region
+    let pr = (prev.rollout[id] || {})[activePid] || 0;
+    if (activePid) { if (pr < 1) pr = Math.min(1, pr + rate); newRollout[id] = { [activePid]: pr }; activeProg.push(pr); }
+    else newRollout[id] = {};
+    // accumulate effects: completed projects (full) + active project (partial)
     let aF = 0, aS = 0, aRi = 0, aO = 0, aFi = 0, aAn = 0, aFw = 0, aC = 0, aLoy = 0;
-    for (const pid of purchasedIds) {
-      let pr = rg[pid] || 0; if (pr < 1) pr = Math.min(1, pr + rate); rg[pid] = pr;
-      const fx = PROJECT_INDEX[pid].fx;
-      if (fx.forest) aF += fx.forest * pr; if (fx.soil) aS += fx.soil * pr; if (fx.river) aRi += fx.river * pr;
-      if (fx.ocean) aO += fx.ocean * pr; if (fx.fish) aFi += fx.fish * pr; if (fx.animals) aAn += fx.animals * pr;
-      if (fx.fresh) aFw += fx.fresh * pr; if (fx.carbon) aC += fx.carbon * pr; if (fx.loyalty) aLoy += fx.loyalty * pr;
-    }
-    newRollout[id] = rg;
+    const addFx = (fx, w) => { if (fx.forest) aF += fx.forest * w; if (fx.soil) aS += fx.soil * w; if (fx.river) aRi += fx.river * w; if (fx.ocean) aO += fx.ocean * w; if (fx.fish) aFi += fx.fish * w; if (fx.animals) aAn += fx.animals * w; if (fx.fresh) aFw += fx.fresh * w; if (fx.carbon) aC += fx.carbon * w; if (fx.loyalty) aLoy += fx.loyalty * w; };
+    for (const pid of completedIds) addFx(PROJECT_INDEX[pid].fx, 1);
+    if (activePid) addFx(PROJECT_INDEX[activePid].fx, pr);
     const supportTarget = 72 - 42 * distFactor;
     loyalty = clamp(loyalty + (supportTarget - loyalty) * 0.02 + aLoy + (r.volunteer ? 0.25 : 0));
     const m = loyalty / 100;
-    carbon = clamp(carbon + 0.1, 10, 100); soil = clamp(soil - 0.08);
-    forest = clamp(forest - (def.poaching ? 0.35 : 0.13)); animals = clamp(animals - (def.poaching ? 0.32 : 0.09));
-    river = clamp(river - carbon * 0.003 - (def.runoff ? 0.1 : 0)); ocean = clamp(ocean - 0.05 - (def.marine ? 0.04 : 0));
-    fish = clamp(fish - 0.14); freshwater = clamp(freshwater - 0.05);
+    carbon = clamp(carbon + 0.1 * D.decay, 10, 100); soil = clamp(soil - 0.08 * D.decay);
+    forest = clamp(forest - (def.poaching ? 0.35 : 0.13) * D.decay); animals = clamp(animals - (def.poaching ? 0.32 : 0.09) * D.decay);
+    river = clamp(river - (carbon * 0.003 + (def.runoff ? 0.1 : 0)) * D.decay); ocean = clamp(ocean - (0.05 + (def.marine ? 0.04 : 0)) * D.decay);
+    fish = clamp(fish - 0.14 * D.decay); freshwater = clamp(freshwater - 0.05 * D.decay);
     forest = clamp(forest + aF * m + (r.volunteer ? 0.12 : 0)); soil = clamp(soil + aS * m); river = clamp(river + aRi * m);
     ocean = clamp(ocean + aO * m); fish = clamp(fish + aFi * m); animals = clamp(animals + aAn * m + (r.volunteer ? 0.12 : 0));
     freshwater = clamp(freshwater + aFw * m); carbon = clamp(carbon + aC, 10, 100);
@@ -242,9 +253,20 @@ function stepWorld(prev) {
     regions[id] = { ...r, loyalty: round(loyalty), carbon: round(carbon), forest: round(forest), soil: round(soil), river: round(river), ocean: round(ocean), fish: round(fish), animals: round(animals), freshwater: round(freshwater), ruleBreaking };
   }
 
+  // queue progression: when the active project is implemented nearly everywhere, complete it and start the next
+  let newQueue = queue, newCompleted = completed;
+  if (activePid && mean(activeProg) >= 0.97) {
+    newCompleted = { ...completed, [activePid]: true };
+    newQueue = queue.slice(1);
+    addEvent(`✅ ${PROJECT_INDEX[activePid].name} fully implemented worldwide.${newQueue.length ? ` Next: ${PROJECT_INDEX[newQueue[0]].name}.` : ""}`, "good");
+  }
+
+  // economy: income from completed (full) + active (partial), minus upkeep per implemented project
   let pointBonus = 0;
-  for (const pid of purchasedIds) { const fx = PROJECT_INDEX[pid].fx; if (fx.points) pointBonus += fx.points * mean(ids.map((id) => newRollout[id][pid] || 0)); }
-  const ecoPoints = round(prev.ecoPoints + BASE_POINT_RATE + pointBonus, 0);
+  for (const pid of completedIds) { const fx = PROJECT_INDEX[pid].fx; if (fx.points) pointBonus += fx.points; }
+  if (activePid) { const fx = PROJECT_INDEX[activePid].fx; if (fx.points) pointBonus += fx.points * mean(activeProg); }
+  const upkeep = completedIds.length * UPKEEP_PER;
+  const ecoPoints = round(Math.max(0, prev.ecoPoints + (BASE_POINT_RATE + pointBonus) * D.point - upkeep), 0);
 
   const avgCarbon = mean(accCarbon), avgForest = mean(accForest);
   co2 = Math.max(380, co2 + ((avgCarbon - 55) * 0.02 - (avgForest - 50) * 0.016) * 1.5 + illegalCo2 * 0.4 + permafrostCo2);
@@ -264,7 +286,7 @@ function stepWorld(prev) {
   if (balance >= 100) { status = "won"; addEvent("🏆 VICTORY — Ecological Balance reached 100%.", "good"); }
   else if (balance <= 0) { status = "lost"; addEvent("☠️ COLLAPSE — Ecological Balance hit 0%.", "crisis"); }
 
-  return { tick: prev.tick + 1, co2: round(co2, 1), temp: round(temp, 2), permafrost, permafrostCo2, ecoPoints, purchased: prev.purchased, rollout: newRollout, hq, activeDisaster, balance, bestBalance, status, flags, regions, events: [...events, ...prev.events].slice(0, 60) };
+  return { tick: prev.tick + 1, co2: round(co2, 1), temp: round(temp, 2), permafrost, permafrostCo2, ecoPoints, owned: prev.owned, queue: newQueue, completed: newCompleted, rollout: newRollout, hq, difficulty: prev.difficulty, activeDisaster, balance, bestBalance, status, flags, regions, events: [...events, ...prev.events].slice(0, 60) };
 }
 
 /* ---------------------------------------------------------------------------
@@ -275,12 +297,12 @@ function deriveGlobals(world) {
   return { air: round(clamp(((460 - world.co2) / 65) * 100)), climate: round(clamp(((2.5 - world.temp) / 1.7) * 100)),
     forest: avg("forest"), soil: avg("soil"), river: avg("river"), ocean: avg("ocean"), fish: avg("fish"), animals: avg("animals") };
 }
-function loadWorld() { try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { const p = JSON.parse(raw); if (p && p.regions && typeof p.tick === "number" && p.status && p.purchased && p.rollout) return p; } } catch {} return makeInitialWorld(); }
+function loadWorld() { try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { const p = JSON.parse(raw); if (p && p.regions && typeof p.tick === "number" && p.status && p.owned && p.queue && p.completed && p.difficulty) return p; } } catch {} return makeInitialWorld(); }
 const hexToRgb = (c) => { const n = parseInt(c.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
 const lerpColor = (a, b, t) => { const A = hexToRgb(a), B = hexToRgb(b); t = clamp(t, 0, 1); return `rgb(${A.map((v, i) => Math.round(v + (B[i] - v) * t)).join(",")})`; };
 const goodColor = (p) => (p >= 66 ? "#34d399" : p >= 40 ? "#fbbf24" : "#f87171");
 const balanceColor = (b) => (b >= 70 ? "#34d399" : b >= 40 ? "#fbbf24" : "#f87171");
-const regionVisuals = (rollout, id) => { const rr = rollout[id] || {}; const has = (v) => PROJECTS.some((p) => p.visual === v && (rr[p.id] || 0) > 0.4); return { solar: has("solar"), wind: has("wind"), reef: has("reef"), capture: has("capture"), greencity: has("greencity") }; };
+const regionVisuals = (world, id) => { const rr = world.rollout[id] || {}; const active = world.queue[0]; const has = (v) => PROJECTS.some((p) => p.visual === v && (world.completed[p.id] || (active === p.id && (rr[p.id] || 0) > 0.4))); return { solar: has("solar"), wind: has("wind"), reef: has("reef"), capture: has("capture"), greencity: has("greencity") }; };
 
 /* ---------------------------------------------------------------------------
    Animated map sub-pieces
@@ -302,7 +324,7 @@ function WorldMap({ world, globals, selected, onSelect }) {
   const garbage = [[260,150,26],[470,210,22],[700,170,24],[640,360,28],[150,360,24],[820,250,22]];
   const cargo = ["M 210 150 C 330 120, 440 150, 520 145", "M 360 180 C 390 250, 360 320, 400 370", "M 880 180 C 920 250, 870 320, 905 380", "M 600 360 C 660 390, 720 360, 770 385"];
   const trawl = ["M 820 360 C 860 340, 905 360, 930 390", "M 120 200 C 170 180, 230 200, 270 175", "M 760 300 C 800 290, 840 305, 870 290"];
-  const trawlBanned = !!world.purchased.w_trawl;
+  const trawlBanned = !!world.completed.w_trawl;
   const bandDefs = [[90,66,"#e7f1ef",0.4],[66,48,"#2c5b3a",0.34],[48,30,"#3c8048",0.26],[30,14,"#c7b074",0.4],[14,-12,"#2f8f43",0.36],[-12,-30,"#c7b074",0.36],[-30,-52,"#3c8048",0.26]];
   const EXTR = 7; // faux-3D extrusion depth
   const extrude = (d, key) => Array.from({ length: EXTR }).map((_, k) => {
@@ -360,7 +382,7 @@ function WorldMap({ world, globals, selected, onSelect }) {
       {REGION_GEO_IDS.map((id) => {
         const r = world.regions[id]; const def = REGION_INDEX[id]; const [cx, cy] = CENTROIDS[id];
         const slots = SLOTS[id]; const nTrees = Math.round((r.forest / 100) * slots.length); const tSize = 9 + r.forest * 0.05;
-        const v = regionVisuals(world.rollout, id);
+        const v = regionVisuals(world, id);
         return (<g key={"d" + id} onClick={() => onSelect(id)} style={{ cursor: "pointer" }}>
           {slots.slice(0, nTrees).map(([x, y], i) => <text key={"t" + i} x={x} y={y} fontSize={tSize} textAnchor="middle" style={{ pointerEvents: "none" }}>🌲</text>)}
           {v.greencity && [slotAt(id, 0), slotAt(id, 6)].map(([x, y], i) => <g key={"gc" + i} style={{ pointerEvents: "none" }}><circle cx={x} cy={y} r="6" fill="rgba(62,240,122,0.35)" /><circle cx={x} cy={y} r="3" fill="#3ef07a" /><circle cx={x + 5} cy={y - 3} r="2" fill="#3ef07a" /><circle cx={x - 4} cy={y + 3} r="2" fill="#3ef07a" /></g>)}
@@ -400,29 +422,33 @@ const fxLabel = (fx) => { const map = { forest: "🌲", soil: "🟫", river: "�
 
 function ProjectsModal({ world, onClose, onBuy }) {
   const [tab, setTab] = useState("earth");
-  const owned = world.purchased;
+  const owned = world.owned;
+  const active = world.queue[0];
   const branches = useMemo(() => { const by = {}; for (const p of PROJECTS) if (p.sec === tab) (by[p.branch] = by[p.branch] || []).push(p); return by; }, [tab]);
-  const nodeState = (p) => owned[p.id] ? "owned" : !p.req.every((r) => owned[r]) ? "locked" : world.ecoPoints < p.cost ? "poor" : "buy";
-  const impl = (id) => round(mean(REGION_GEO_IDS.map((r) => (world.rollout[r] || {})[id] || 0)) * 100, 0);
+  const nodeState = (p) => world.completed[p.id] ? "done" : owned[p.id] ? (p.id === active ? "active" : "queued") : !p.req.every((r) => owned[r]) ? "locked" : world.ecoPoints < p.cost ? "poor" : "buy";
+  const activeProg = round(mean(REGION_GEO_IDS.map((r) => (world.rollout[r] || {})[active] || 0)) * 100, 0);
   const sec = SECTIONS.find((s) => s.id === tab);
   return (
     <div className="vg-modal-bg" onClick={onClose}>
       <div className="vg-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="vg-modal-head"><div><h2 style={{ margin: 0, fontSize: 18 }}>Eco-Projects</h2><div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 2 }}>Commissioned projects roll out gradually across every continent.</div></div>
+        <div className="vg-modal-head"><div><h2 style={{ margin: 0, fontSize: 18 }}>Eco-Projects</h2><div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 2 }}>Projects implement <b>one at a time</b>, in the order you commission them.</div></div>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}><span className="vg-points">✦ {world.ecoPoints}</span><button className="vg-btn" style={{ background: "#33415a", color: "#e6eef5" }} onClick={onClose}>✕</button></div></div>
+        {active && <div className="vg-queue-bar"><span>⏳ Implementing: <b>{PROJECT_INDEX[active].name}</b> — {activeProg}%</span><span style={{ color: "#7fa593" }}>{world.queue.length - 1} queued</span></div>}
         <div className="vg-tabs">{SECTIONS.map((s) => <button key={s.id} className={"vg-tab" + (tab === s.id ? " on" : "")} onClick={() => setTab(s.id)} style={tab === s.id ? { background: s.color, color: "#08121e" } : {}}>{s.icon} {s.name}</button>)}</div>
         <div className="vg-modal-body">
           {Object.entries(branches).map(([branch, nodes]) => (
             <div key={branch} style={{ marginBottom: 18 }}>
               <div className="vg-branch" style={{ borderColor: sec.color + "55" }}><span style={{ width: 6, height: 6, borderRadius: 6, background: sec.color, display: "inline-block" }} /> {branch}</div>
-              <div className="vg-grid">{nodes.map((p) => { const s = nodeState(p); const pr = impl(p.id);
-                return (<div key={p.id} className={"vg-node" + (s === "owned" ? " owned" : s === "locked" ? " locked" : "")}>
+              <div className="vg-grid">{nodes.map((p) => { const s = nodeState(p);
+                return (<div key={p.id} className={"vg-node" + (s === "done" ? " owned" : s === "locked" ? " locked" : "")}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}><span style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.25 }}>{p.name}</span><span className="vg-cost">✦{p.cost}</span></div>
                   <div style={{ fontSize: 11, color: "#9fb0c4", margin: "7px 0 9px", letterSpacing: 0.3 }}>{fxLabel(p.fx)}</div>
-                  {s === "owned" && (pr < 100 ? <div><div style={{ fontSize: 10.5, color: "#fbbf24", marginBottom: 4 }}>Implementing… {pr}%</div><Bar value={pr} color="#fbbf24" height={5} /></div> : <div style={{ fontSize: 11.5, fontWeight: 700, color: "#34d399" }}>✓ Fully implemented</div>)}
+                  {s === "done" && <div style={{ fontSize: 11.5, fontWeight: 700, color: "#34d399" }}>✓ Implemented</div>}
+                  {s === "active" && <div><div style={{ fontSize: 10.5, color: "#fbbf24", marginBottom: 4 }}>⏳ Implementing… {activeProg}%</div><Bar value={activeProg} color="#fbbf24" height={5} /></div>}
+                  {s === "queued" && <div style={{ fontSize: 11, color: "#7dd3fc" }}>🕓 Queued · position {world.queue.indexOf(p.id)}</div>}
                   {s === "locked" && <div style={{ fontSize: 11, color: "#8295ab" }}>🔒 Requires {p.req.map((r) => PROJECT_INDEX[r].name).join(", ")}</div>}
                   {s === "poor" && <button className="vg-btn block" disabled style={{ background: "#2a3446", color: "#64748b" }}>Need ✦{p.cost}</button>}
-                  {s === "buy" && <button className="vg-btn block" style={{ background: sec.color, color: "#08121e" }} onClick={() => onBuy(p.id)}>Commission</button>}
+                  {s === "buy" && <button className="vg-btn block" style={{ background: sec.color, color: "#08121e" }} onClick={() => onBuy(p.id)}>{world.queue.length ? "Add to queue" : "Commission"}</button>}
                 </div>); })}</div>
             </div>
           ))}
@@ -460,19 +486,22 @@ export default function VerdantGrid() {
   useEffect(() => { if (world.balance > bestEver) { setBestEver(world.balance); try { localStorage.setItem(BEST_KEY, String(world.balance)); } catch {} } }, [world.balance, bestEver]);
 
   const buyProject = useCallback((id) => setWorld((w) => { if (w.status !== "playing") return w; const p = PROJECT_INDEX[id];
-    if (!p || w.purchased[id] || w.ecoPoints < p.cost || !p.req.every((r) => w.purchased[r])) return w;
-    return { ...w, ecoPoints: w.ecoPoints - p.cost, purchased: { ...w.purchased, [id]: true }, events: [{ id: `buy-${w.tick}-${id}`, t: w.tick, kind: "good", msg: `🔬 ${p.name} commissioned — rollout beginning.` }, ...w.events].slice(0, 60) }; }), []);
+    if (!p || w.owned[id] || w.ecoPoints < p.cost || !p.req.every((r) => w.owned[r])) return w;
+    const queued = w.queue.length > 0;
+    return { ...w, ecoPoints: w.ecoPoints - p.cost, owned: { ...w.owned, [id]: true }, queue: [...w.queue, id], events: [{ id: `buy-${w.tick}-${id}`, t: w.tick, kind: "good", msg: `🔬 ${p.name} ${queued ? "added to the implementation queue" : "commissioned — rollout beginning"}.` }, ...w.events].slice(0, 60) }; }), []);
   const setHQ = useCallback((id) => setWorld((w) => (w.status !== "playing" ? w : { ...w, hq: id, events: [{ id: `hq-${w.tick}-${id}`, t: w.tick, kind: "info", msg: `🏛️ Headquarters relocated to ${REGION_INDEX[id].name}.` }, ...w.events].slice(0, 60) })), []);
   const loyaltyCampaign = useCallback((id) => setWorld((w) => { if (w.status !== "playing" || w.ecoPoints < LOYALTY_CAMPAIGN_COST) return w; const r = w.regions[id];
     return { ...w, ecoPoints: w.ecoPoints - LOYALTY_CAMPAIGN_COST, regions: { ...w.regions, [id]: { ...r, loyalty: clamp(r.loyalty + 15) } }, events: [{ id: `camp-${w.tick}-${id}`, t: w.tick, kind: "good", msg: `📣 Loyalty campaign in ${REGION_INDEX[id].name} (+15%).` }, ...w.events].slice(0, 60) }; }), []);
   const toggleVolunteer = useCallback((id) => setWorld((w) => { if (w.status !== "playing") return w; const r = w.regions[id];
-    const slots = volunteerSlots(w.purchased), used = Object.values(w.regions).filter((x) => x.volunteer).length;
+    const slots = volunteerSlots(w.completed), used = Object.values(w.regions).filter((x) => x.volunteer).length;
     if (!r.volunteer && used >= slots) return w; return { ...w, regions: { ...w.regions, [id]: { ...r, volunteer: !r.volunteer } } }; }), []);
-  const newGame = useCallback(() => { const w = makeInitialWorld(); setWorld(w); setRunning(true); setSpeed(1); setSelected("na"); setProjectsOpen(false); try { localStorage.removeItem(SAVE_KEY); } catch {} }, []);
+  const newGame = useCallback((difficulty) => { const dk = (typeof difficulty === "string" && DIFFICULTY[difficulty]) ? difficulty : world.difficulty; const w = makeInitialWorld(dk); setWorld(w); setRunning(true); setSpeed(1); setSelected("na"); setProjectsOpen(false); try { localStorage.removeItem(SAVE_KEY); } catch {} }, [world.difficulty]);
 
   const g = useMemo(() => deriveGlobals(world), [world]);
   const region = world.regions[selected]; const def = REGION_INDEX[selected];
-  const volSlots = useMemo(() => volunteerSlots(world.purchased), [world.purchased]);
+  const volSlots = useMemo(() => volunteerSlots(world.completed), [world.completed]);
+  const activeProject = world.queue[0];
+  const activeProjProg = useMemo(() => activeProject ? Math.round(mean(REGION_GEO_IDS.map((r) => (world.rollout[r] || {})[activeProject] || 0)) * 100) : 0, [world.rollout, activeProject]);
   const volUsed = useMemo(() => Object.values(world.regions).filter((x) => x.volunteer).length, [world.regions]);
   const kindColor = { crisis: "#f87171", warn: "#fbbf24", good: "#34d399", info: "#7dd3fc" };
   const year = 2025 + Math.floor(world.tick / 12);
@@ -494,13 +523,22 @@ export default function VerdantGrid() {
             {world.permafrost && <span className="vg-chip warn">❄️ THAW</span>}
             <button className="vg-btn" onClick={() => setRunning((r) => !r)}>{running ? "⏸" : "▶"}</button>
             {[1, 2, 4].map((s) => <button key={s} className={"vg-btn" + (speed === s ? " sel" : "")} onClick={() => setSpeed(s)}>{s}×</button>)}
-            <button className="vg-btn" onClick={newGame}>↻</button>
+            <button className="vg-btn" onClick={() => newGame()}>↻</button>
           </div>
         </header>
 
+        <div className="vg-diffbar">
+          <span className="vg-diff-label">Difficulty</span>
+          {DIFF_KEYS.map((k) => <button key={k} className={"vg-btn vg-diff" + (world.difficulty === k ? " sel" : "")} onClick={() => newGame(k)}>{DIFFICULTY[k].label}</button>)}
+          <span className="vg-diff-note">selecting a level starts a new game</span>
+        </div>
+
         <div className="vg-balance" style={{ borderColor: balanceColor(world.balance) + "55" }}>
-          <div className="vg-balance-h"><span>Global Ecological Balance</span><span style={{ color: "#7b8aa0" }}>Win 100% · Lose 0%</span></div>
+          <div className="vg-balance-h"><span>Global Ecological Balance · {DIFFICULTY[world.difficulty].label}</span><span style={{ color: "#7b8aa0" }}>Win 100% · Lose 0%</span></div>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}><span style={{ fontSize: 32, fontWeight: 800, color: balanceColor(world.balance), minWidth: 76 }}>{Math.round(world.balance)}%</span><div style={{ flex: 1 }}><Bar value={world.balance} color={balanceColor(world.balance)} height={14} /></div></div>
+          {activeProject
+            ? <div className="vg-queue-strip">⏳ Implementing <b>{PROJECT_INDEX[activeProject].name}</b> — {activeProjProg}%<span style={{ flex: 1 }} /><span style={{ color: "#7fa593" }}>{world.queue.length - 1} queued</span></div>
+            : <div className="vg-queue-strip" style={{ color: "#5f7c6e" }}>No project implementing — open 🔬 Projects to commission one.</div>}
         </div>
 
         <div className="vg-main">
@@ -617,6 +655,12 @@ const CSS = `
 .vg-app ::-webkit-scrollbar{width:9px;height:9px}
 .vg-app ::-webkit-scrollbar-thumb{background:rgba(94,240,138,.22);border-radius:8px}
 .vg-app ::-webkit-scrollbar-thumb:hover{background:rgba(94,240,138,.38)}
+.vg-diffbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:14px}
+.vg-diff-label{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:#7fa593;font-weight:600;margin-right:2px}
+.vg-diff{padding:6px 13px}
+.vg-diff-note{font-size:10px;color:#5f7c6e;margin-left:4px}
+.vg-queue-strip{display:flex;align-items:center;gap:6px;margin-top:11px;padding-top:10px;border-top:1px solid rgba(94,240,138,.1);font-size:12px;color:#cdeeda}
+.vg-queue-bar{display:flex;justify-content:space-between;align-items:center;margin:12px 22px 0;padding:9px 14px;border-radius:11px;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);font-size:12px;color:#fde68a}
 @keyframes vgMarquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 @keyframes vgPulse{0%,100%{opacity:1}50%{opacity:.5}}
 `;
